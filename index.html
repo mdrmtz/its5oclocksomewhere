@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Global 5 O'Clock | Dark Mode</title>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+    <script src="https://cdn.jsdelivr.net/npm/luxon@3.4.4/build/global/luxon.min.js"></script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <style>
+        :root { --accent: #ffae00; --bg: #000000; --glass: rgba(15, 15, 15, 0.98); --card-border: 1.5px solid #ffae00; }
+        body { font-family: 'Inter', sans-serif; background: var(--bg); margin: 0; height: 100dvh; overflow: hidden; color: white; }
+        #map { width: 100%; height: 100%; z-index: 1; background: #000; }
+        
+        /* HUD & UI */
+        .hud { position: absolute; top: 20px; left: 0; right: 0; z-index: 1000; text-align: center; pointer-events: none; }
+        .hud h1 { font-size: clamp(1rem, 5vw, 2.2rem); margin: 0; color: var(--accent); font-weight: 900; letter-spacing: 2px; text-shadow: 0 4px 10px rgba(0,0,0,0.8); }
+        #status-bar { font-size: 0.7rem; background: rgba(0,0,0,0.9); padding: 5px 12px; border-radius: 4px; border: 1px solid rgba(255,174,0,0.4); margin-top: 8px; display: inline-block; }
+        
+        .controls { position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%); z-index: 1000; display: flex; gap: 10px; width: 90%; max-width: 400px; }
+        .btn { flex: 1; background: var(--accent); color: #000; border: none; padding: 14px; border-radius: 8px; font-weight: 800; font-size: 0.75rem; text-transform: uppercase; cursor: pointer; transition: 0.2s; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
+        .btn-secondary { background: rgba(25, 25, 25, 0.95); color: #fff; border: 1px solid #333; }
+
+        /* Modal & Popups - Dark Mode Implementation */
+        #recipe-modal { position: fixed; z-index: 3000; background: var(--glass); border: var(--card-border); color: white; visibility: hidden; opacity: 0; transition: 0.4s cubic-bezier(0.19, 1, 0.22, 1); overflow-y: auto; border-radius: 12px; }
+
+        @media (min-width: 769px) {
+            #recipe-modal { top: 50%; left: 50%; transform: translate(-50%, -50%); width: 450px; max-height: 80vh; padding: 40px; }
+            #recipe-modal.active { visibility: visible; opacity: 1; }
+        }
+
+        @media (max-width: 768px) {
+            #recipe-modal { bottom: -100%; left: 0; right: 0; width: 100%; padding: 30px 25px 50px; border-radius: 20px 20px 0 0; border-bottom: none; }
+            #recipe-modal.active { visibility: visible; opacity: 1; bottom: 0; }
+        }
+
+        .close-modal { position: absolute; right: 20px; top: 15px; font-size: 1.8rem; color: var(--accent); cursor: pointer; }
+        
+        /* Leaflet Dark Customization */
+        .leaflet-popup-content-wrapper { background: #111 !important; color: white !important; border: var(--card-border) !important; border-radius: 12px !important; }
+        .leaflet-popup-tip { background: #ffae00 !important; }
+        .recipe-btn { background: var(--accent); color: black; border: none; padding: 12px; width: 100%; margin-top: 15px; font-weight: 800; cursor: pointer; border-radius: 6px; text-transform: uppercase; }
+        
+        hr { border: 0; border-top: 1px solid #333; margin: 20px 0; }
+    </style>
+</head>
+<body>
+
+    <div class="hud">
+        <h1>THE GLOBAL 5PM BELT</h1>
+        <div id="status-bar">LOCATING ACTIVE COUNTRIES...</div>
+    </div>
+
+    <div id="map"></div>
+
+    <div id="recipe-modal">
+        <span class="close-modal" onclick="window.closeRecipe()">&times;</span>
+        <div id="recipe-body"></div>
+    </div>
+
+    <div class="controls">
+        <button class="btn btn-secondary" onclick="window.showAll()">Active Zones</button>
+        <button class="btn" onclick="window.showOne()">Random Teleport</button>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const DateTime = luxon.DateTime;
+
+            const recipes = {
+                "Arak": { ing: ["2oz Arak", "Ice Water"], inst: "Pour Arak first, add water to create the milky 'Lion's Milk' effect." },
+                "Pisco Sour": { ing: ["2oz Pisco", "1oz Lime", "3/4oz Syrup", "Egg White"], inst: "Dry shake, then shake with ice. Garnish with bitters." },
+                "Caipirinha": { ing: ["2oz Cachaça", "1 Lime", "2tsp Sugar"], inst: "Muddle lime and sugar. Fill with crushed ice and spirit." },
+                "Sake": { ing: ["4oz Sake"], inst: "Serve chilled in a glass or warm in a ceramic cup." },
+                "Tequila": { ing: ["2oz Tequila Blanco", "Lime"], inst: "Sip neat or pair with a salt rim and lime." },
+                "Beer": { ing: ["Local Lager/Ale"], inst: "Serve in a chilled glass at 4°C." },
+                "Wine": { ing: ["National Varietal"], inst: "Serve at cellar temperature (12-18°C)." },
+                "Vodka": { ing: ["Frozen Vodka"], inst: "Serve neat in a shot glass directly from the freezer." },
+                "Rum": { ing: ["2oz Dark Rum", "Lime Juice"], inst: "Build over ice, garnish with a lime wheel." },
+                "Gin & Tonic": { ing: ["2oz Gin", "4oz Tonic"], inst: "Pour over large ice cubes, add a lime wedge." },
+                "Rakia": { ing: ["2oz Fruit Brandy"], inst: "Serve neat, usually accompanied by a small salad." },
+                "Bourbon": { ing: ["2oz Bourbon"], inst: "Neat, with a splash of water, or one large ice cube." },
+                "Ouzo": { ing: ["2oz Ouzo", "Cold Water"], inst: "Add water until drink turns milky white." },
+                "Tea": { ing: ["Loose Tea Leaves", "Fresh Mint"], inst: "Steep and serve hot in decorative glasses." },
+                "Coffee": { ing: ["Dark Roast Coffee"], inst: "Serve black, hot, and strong." }
+            };
+
+            const locations = [
+                // AMERICAS
+                { n: "Kabul", c: "Afghanistan", d: "Tea", tz: "Asia/Kabul", lt: 34.5, lg: 69.1 },
+                { n: "Tirana", c: "Albania", d: "Rakia", tz: "Europe/Tirane", lt: 41.3, lg: 19.8 },
+                { n: "Algiers", c: "Algeria", d: "Tea", tz: "Africa/Algiers", lt: 36.7, lg: 3.0 },
+                { n: "Andorra la Vella", c: "Andorra", d: "Wine", tz: "Europe/Andorra", lt: 42.5, lg: 1.5 },
+                { n: "Luanda", c: "Angola", d: "Beer", tz: "Africa/Luanda", lt: -8.8, lg: 13.2 },
+                { n: "St. John's", c: "Antigua", d: "Rum", tz: "America/Antigua", lt: 17.1, lg: -61.8 },
+                { n: "Buenos Aires", c: "Argentina", d: "Wine", tz: "America/Argentina/Buenos_Aires", lt: -34.6, lg: -58.4 },
+                { n: "Yerevan", c: "Armenia", d: "Wine", tz: "Asia/Yerevan", lt: 40.1, lg: 44.5 },
+                { n: "Canberra", c: "Australia", d: "Beer", tz: "Australia/Canberra", lt: -35.2, lg: 149.1 },
+                { n: "Vienna", c: "Austria", d: "Beer", tz: "Europe/Vienna", lt: 48.2, lg: 16.3 },
+                { n: "Baku", c: "Azerbaijan", d: "Tea", tz: "Asia/Baku", lt: 40.4, lg: 49.8 },
+                { n: "Nassau", c: "Bahamas", d: "Rum", tz: "America/Nassau", lt: 25.0, lg: -77.3 },
+                { n: "Manama", c: "Bahrain", d: "Coffee", tz: "Asia/Bahrain", lt: 26.2, lg: 50.5 },
+                { n: "Dhaka", c: "Bangladesh", d: "Tea", tz: "Asia/Dhaka", lt: 23.8, lg: 90.4 },
+                { n: "Bridgetown", c: "Barbados", d: "Rum", tz: "America/Barbados", lt: 13.1, lg: -59.6 },
+                { n: "Minsk", c: "Belarus", d: "Vodka", tz: "Europe/Minsk", lt: 53.9, lg: 27.5 },
+                { n: "Brussels", c: "Belgium", d: "Beer", tz: "Europe/Brussels", lt: 50.8, lg: 4.3 },
+                { n: "Belmopan", c: "Belize", d: "Rum", tz: "America/Belize", lt: 17.2, lg: -88.7 },
+                { n: "Porto-Novo", c: "Benin", d: "Beer", tz: "Africa/Porto-Novo", lt: 6.4, lg: 2.6 },
+                { n: "Thimphu", c: "Bhutan", d: "Tea", tz: "Asia/Thimphu", lt: 27.4, lg: 89.6 },
+                { n: "La Paz", c: "Bolivia", d: "Beer", tz: "America/La_Paz", lt: -16.5, lg: -68.1 },
+                { n: "Sarajevo", c: "Bosnia", d: "Rakia", tz: "Europe/Sarajevo", lt: 43.8, lg: 18.3 },
+                { n: "Gaborone", c: "Botswana", d: "Beer", tz: "Africa/Gaborone", lt: -24.6, lg: 25.9 },
+                { n: "Brasilia", c: "Brazil", d: "Caipirinha", tz: "America/Sao_Paulo", lt: -15.7, lg: -47.8 },
+                { n: "F. de Noronha", c: "Brazil", d: "Caipirinha", tz: "America/Noronha", lt: -3.8, lg: -32.4 },
+                { n: "Bandar Seri", c: "Brunei", d: "Tea", tz: "Asia/Brunei", lt: 4.9, lg: 114.9 },
+                { n: "Sofia", c: "Bulgaria", d: "Rakia", tz: "Europe/Sofia", lt: 42.6, lg: 23.3 },
+                { n: "Ouagadougou", c: "Burkina Faso", d: "Beer", tz: "Africa/Ouagadougou", lt: 12.3, lg: -1.5 },
+                { n: "Bujumbura", c: "Burundi", d: "Beer", tz: "Africa/Bujumbura", lt: -3.3, lg: 29.3 },
+                { n: "Praia", c: "Cabo Verde", d: "Rum", tz: "Atlantic/Cape_Verde", lt: 14.9, lg: -23.5 },
+                { n: "Phnom Penh", c: "Cambodia", d: "Beer", tz: "Asia/Phnom_Penh", lt: 11.5, lg: 104.8 },
+                { n: "Yaounde", c: "Cameroon", d: "Beer", tz: "Africa/Douala", lt: 3.8, lg: 11.5 },
+                { n: "Ottawa", c: "Canada", d: "Beer", tz: "America/Toronto", lt: 45.4, lg: -75.6 },
+                { n: "Bangui", c: "Central African Rep", d: "Beer", tz: "Africa/Bangui", lt: 4.3, lg: 18.5 },
+                { n: "N'Djamena", c: "Chad", d: "Tea", tz: "Africa/Ndjamena", lt: 12.1, lg: 15.0 },
+                { n: "Santiago", c: "Chile", d: "Wine", tz: "America/Santiago", lt: -33.4, lg: -70.6 },
+                { n: "Beijing", c: "China", d: "Tea", tz: "Asia/Shanghai", lt: 39.9, lg: 116.4 },
+                { n: "Bogota", c: "Colombia", d: "Coffee", tz: "America/Bogota", lt: 4.7, lg: -74.0 },
+                { n: "Moroni", c: "Comoros", d: "Tea", tz: "Indian/Comoro", lt: -11.7, lg: 43.2 },
+                { n: "Kinshasa", c: "DR Congo", d: "Beer", tz: "Africa/Kinshasa", lt: -4.3, lg: 15.3 },
+                { n: "Brazzaville", c: "Congo", d: "Beer", tz: "Africa/Brazzaville", lt: -4.2, lg: 15.2 },
+                { n: "San Jose", c: "Costa Rica", d: "Coffee", tz: "America/Costa_Rica", lt: 9.9, lg: -84.0 },
+                { n: "Yamoussoukro", c: "Cote d'Ivoire", d: "Beer", tz: "Africa/Abidjan", lt: 6.8, lg: -5.2 },
+                { n: "Zagreb", c: "Croatia", d: "Rakia", tz: "Europe/Zagreb", lt: 45.8, lg: 15.9 },
+                { n: "Havana", c: "Cuba", d: "Rum", tz: "America/Havana", lt: 23.1, lg: -82.3 },
+                { n: "Nicosia", c: "Cyprus", d: "Wine", tz: "Asia/Nicosia", lt: 35.1, lg: 33.3 },
+                { n: "Prague", c: "Czechia", d: "Beer", tz: "Europe/Prague", lt: 50.0, lg: 14.4 },
+                { n: "Copenhagen", c: "Denmark", d: "Beer", tz: "Europe/Copenhagen", lt: 55.6, lg: 12.5 },
+                { n: "Djibouti", c: "Djibouti", d: "Tea", tz: "Africa/Djibouti", lt: 11.5, lg: 43.1 },
+                { n: "Roseau", c: "Dominica", d: "Rum", tz: "America/Dominica", lt: 15.3, lg: -61.3 },
+                { n: "Santo Domingo", c: "Dominican Rep", d: "Rum", tz: "America/Santo_Domingo", lt: 18.4, lg: -69.9 },
+                { n: "Quito", c: "Ecuador", d: "Beer", tz: "America/Guayaquil", lt: -0.1, lg: -78.4 },
+                { n: "Cairo", c: "Egypt", d: "Tea", tz: "Africa/Cairo", lt: 30.0, lg: 31.2 },
+                { n: "San Salvador", c: "El Salvador", d: "Coffee", tz: "America/El_Salvador", lt: 13.6, lg: -89.1 },
+                { n: "Malabo", c: "Equatorial Guinea", d: "Beer", tz: "Africa/Malabo", lt: 3.7, lg: 8.7 },
+                { n: "Asmara", c: "Eritrea", d: "Tea", tz: "Africa/Asmara", lt: 15.3, lg: 38.9 },
+                { n: "Tallinn", c: "Estonia", d: "Vodka", tz: "Europe/Tallinn", lt: 59.4, lg: 24.7 },
+                { n: "Mbabane", c: "Eswatini", d: "Beer", tz: "Africa/Mbabane", lt: -26.3, lg: 31.1 },
+                { n: "Addis Ababa", c: "Ethiopia", d: "Coffee", tz: "Africa/Addis_Ababa", lt: 9.0, lg: 38.7 },
+                { n: "Suva", c: "Fiji", d: "Beer", tz: "Pacific/Fiji", lt: -18.1, lg: 178.4 },
+                { n: "Helsinki", c: "Finland", d: "Vodka", tz: "Europe/Helsinki", lt: 60.1, lg: 24.9 },
+                { n: "Paris", c: "France", d: "Wine", tz: "Europe/Paris", lt: 48.8, lg: 2.3 },
+                { n: "Libreville", c: "Gabon", d: "Beer", tz: "Africa/Libreville", lt: 0.4, lg: 9.4 },
+                { n: "Banjul", c: "Gambia", d: "Tea", tz: "Africa/Banjul", lt: 13.4, lg: -16.5 },
+                { n: "Tbilisi", c: "Georgia", d: "Wine", tz: "Asia/Tbilisi", lt: 41.7, lg: 44.7 },
+                { n: "Berlin", c: "Germany", d: "Beer", tz: "Europe/Berlin", lt: 52.5, lg: 13.4 },
+                { n: "Accra", c: "Ghana", d: "Beer", tz: "Africa/Accra", lt: 5.6, lg: -0.1 },
+                { n: "Athens", c: "Greece", d: "Ouzo", tz: "Europe/Athens", lt: 37.9, lg: 23.7 },
+                { n: "Nuuk", c: "Greenland", d: "Coffee", tz: "America/Nuuk", lt: 64.1, lg: -51.7 },
+                { n: "Ittoqqortoormiit", c: "Greenland", d: "Coffee", tz: "America/Scoresbysund", lt: 70.4, lg: -21.9 },
+                { n: "St. George's", c: "Grenada", d: "Rum", tz: "America/Grenada", lt: 12.0, lg: -61.7 },
+                { n: "Guatemala City", c: "Guatemala", d: "Coffee", tz: "America/Guatemala", lt: 14.6, lg: -90.5 },
+                { n: "Conakry", c: "Guinea", d: "Tea", tz: "Africa/Conakry", lt: 9.5, lg: -13.6 },
+                { n: "Bissau", c: "Guinea-Bissau", d: "Beer", tz: "Africa/Bissau", lt: 11.8, lg: -15.5 },
+                { n: "Georgetown", c: "Guyana", d: "Rum", tz: "America/Guyana", lt: 6.8, lg: -58.1 },
+                { n: "Port-au-Prince", c: "Haiti", d: "Rum", tz: "America/Port-au-Prince", lt: 18.5, lg: -72.3 },
+                { n: "Tegucigalpa", c: "Honduras", d: "Coffee", tz: "America/Tegucigalpa", lt: 14.1, lg: -87.2 },
+                { n: "Budapest", c: "Hungary", d: "Wine", tz: "Europe/Budapest", lt: 47.4, lg: 19.0 },
+                { n: "Reykjavik", c: "Iceland", d: "Beer", tz: "Atlantic/Reykjavik", lt: 64.1, lg: -21.8 },
+                { n: "New Delhi", c: "India", d: "Tea", tz: "Asia/Kolkata", lt: 28.6, lg: 77.2 },
+                { n: "Jakarta", c: "Indonesia", d: "Tea", tz: "Asia/Jakarta", lt: -6.2, lg: 106.8 },
+                { n: "Tehran", c: "Iran", d: "Tea", tz: "Asia/Tehran", lt: 35.6, lg: 51.3 },
+                { n: "Baghdad", c: "Iraq", d: "Arak", tz: "Asia/Baghdad", lt: 33.3, lg: 44.3 },
+                { n: "Dublin", c: "Ireland", d: "Beer", tz: "Europe/Dublin", lt: 53.3, lg: -6.2 },
+                { n: "Jerusalem", c: "Israel", d: "Wine", tz: "Asia/Jerusalem", lt: 31.7, lg: 35.2 },
+                { n: "Rome", c: "Italy", d: "Wine", tz: "Europe/Rome", lt: 41.9, lg: 12.4 },
+                { n: "Kingston", c: "Jamaica", d: "Rum", tz: "America/Jamaica", lt: 18.0, lg: -76.7 },
+                { n: "Tokyo", c: "Japan", d: "Sake", tz: "Asia/Tokyo", lt: 35.6, lg: 139.6 },
+                { n: "Amman", c: "Jordan", d: "Tea", tz: "Asia/Amman", lt: 31.9, lg: 35.9 },
+                { n: "Astana", c: "Kazakhstan", d: "Tea", tz: "Asia/Almaty", lt: 51.1, lg: 71.4 },
+                { n: "Nairobi", c: "Kenya", d: "Beer", tz: "Africa/Nairobi", lt: -1.2, lg: 36.8 },
+                { n: "Tarawa", c: "Kiribati", d: "Tea", tz: "Pacific/Tarawa", lt: 1.3, lg: 172.9 },
+                { n: "Pristina", c: "Kosovo", d: "Rakia", tz: "Europe/Belgrade", lt: 42.6, lg: 21.1 },
+                { n: "Kuwait City", c: "Kuwait", d: "Tea", tz: "Asia/Kuwait", lt: 29.3, lg: 47.9 },
+                { n: "Bishkek", c: "Kyrgyzstan", d: "Tea", tz: "Asia/Bishkek", lt: 42.8, lg: 74.5 },
+                { n: "Vientiane", c: "Laos", d: "Beer", tz: "Asia/Vientiane", lt: 17.9, lg: 102.6 },
+                { n: "Riga", c: "Latvia", d: "Beer", tz: "Europe/Riga", lt: 56.9, lg: 24.1 },
+                { n: "Beirut", c: "Lebanon", d: "Arak", tz: "Asia/Beirut", lt: 33.8, lg: 35.5 },
+                { n: "Maseru", c: "Lesotho", d: "Beer", tz: "Africa/Maseru", lt: -29.3, lg: 27.4 },
+                { n: "Monrovia", c: "Liberia", d: "Beer", tz: "Africa/Monrovia", lt: 6.3, lg: -10.7 },
+                { n: "Tripoli", c: "Libya", d: "Tea", tz: "Africa/Tripoli", lt: 32.8, lg: 13.1 },
+                { n: "Vaduz", c: "Liechtenstein", d: "Wine", tz: "Europe/Vaduz", lt: 47.1, lg: 9.5 },
+                { n: "Vilnius", c: "Lithuania", d: "Beer", tz: "Europe/Vilnius", lt: 54.6, lg: 25.2 },
+                { n: "Luxembourg", c: "Luxembourg", d: "Wine", tz: "Europe/Luxembourg", lt: 49.6, lg: 6.1 },
+                { n: "Antananarivo", c: "Madagascar", d: "Rum", tz: "Indian/Antananarivo", lt: -18.8, lg: 47.5 },
+                { n: "Lilongwe", c: "Malawi", d: "Beer", tz: "Africa/Blantyre", lt: -13.9, lg: 33.7 },
+                { n: "Kuala Lumpur", c: "Malaysia", d: "Tea", tz: "Asia/Kuala_Lumpur", lt: 3.1, lg: 101.6 },
+                { n: "Male", c: "Maldives", d: "Tea", tz: "Indian/Maldives", lt: 4.1, lg: 73.5 },
+                { n: "Bamako", c: "Mali", d: "Tea", tz: "Africa/Bamako", lt: 12.6, lg: -8.0 },
+                { n: "Valletta", c: "Malta", d: "Beer", tz: "Europe/Malta", lt: 35.9, lg: 14.5 },
+                { n: "Majuro", c: "Marshall Islands", d: "Tea", tz: "Pacific/Majuro", lt: 7.1, lg: 171.1 },
+                { n: "Nouakchott", c: "Mauritania", d: "Tea", tz: "Africa/Nouakchott", lt: 18.0, lg: -15.9 },
+                { n: "Port Louis", c: "Mauritius", d: "Rum", tz: "Indian/Mauritius", lt: -20.1, lg: 57.5 },
+                { n: "Mexico City", c: "Mexico", d: "Tequila", tz: "America/Mexico_City", lt: 19.4, lg: -99.1 },
+                { n: "Palikir", c: "Micronesia", d: "Tea", tz: "Pacific/Palikir", lt: 6.9, lg: 158.1 },
+                { n: "Chisinau", c: "Moldova", d: "Wine", tz: "Europe/Chisinau", lt: 47.0, lg: 28.8 },
+                { n: "Monaco", c: "Monaco", d: "Wine", tz: "Europe/Monaco", lt: 43.7, lg: 7.4 },
+                { n: "Ulaanbaatar", c: "Mongolia", d: "Tea", tz: "Asia/Ulaanbaatar", lt: 47.8, lg: 106.9 },
+                { n: "Podgorica", c: "Montenegro", d: "Rakia", tz: "Europe/Podgorica", lt: 42.4, lg: 19.2 },
+                { n: "Rabat", c: "Morocco", d: "Tea", tz: "Africa/Casablanca", lt: 34.0, lg: -6.8 },
+                { n: "Maputo", c: "Mozambique", d: "Beer", tz: "Africa/Maputo", lt: -25.9, lg: 32.5 },
+                { n: "Naypyidaw", c: "Myanmar", d: "Tea", tz: "Asia/Yangon", lt: 19.7, lg: 96.0 },
+                { n: "Windhoek", c: "Namibia", d: "Beer", tz: "Africa/Windhoek", lt: -22.5, lg: 17.0 },
+                { n: "Yaren", c: "Nauru", d: "Tea", tz: "Pacific/Nauru", lt: -0.5, lg: 166.9 },
+                { n: "Kathmandu", c: "Nepal", d: "Tea", tz: "Asia/Kathmandu", lt: 27.7, lg: 85.3 },
+                { n: "Amsterdam", c: "Netherlands", d: "Beer", tz: "Europe/Amsterdam", lt: 52.3, lg: 4.8 },
+                { n: "Wellington", c: "New Zealand", d: "Wine", tz: "Pacific/Auckland", lt: -41.2, lg: 174.7 },
+                { n: "Managua", c: "Nicaragua", d: "Rum", tz: "America/Managua", lt: 12.1, lg: -86.2 },
+                { n: "Niamey", c: "Niger", d: "Tea", tz: "Africa/Niamey", lt: 13.5, lg: 2.1 },
+                { n: "Abuja", c: "Nigeria", d: "Beer", tz: "Africa/Lagos", lt: 9.0, lg: 7.4 },
+                { n: "Pyongyang", c: "North Korea", d: "Beer", tz: "Asia/Pyongyang", lt: 39.0, lg: 125.7 },
+                { n: "Skopje", c: "North Macedonia", d: "Rakia", tz: "Europe/Skopje", lt: 42.0, lg: 21.4 },
+                { n: "Oslo", c: "Norway", d: "Beer", tz: "Europe/Oslo", lt: 59.9, lg: 10.7 },
+                { n: "Muscat", c: "Oman", d: "Coffee", tz: "Asia/Muscat", lt: 23.6, lg: 58.5 },
+                { n: "Islamabad", c: "Pakistan", d: "Tea", tz: "Asia/Karachi", lt: 33.7, lg: 73.0 },
+                { n: "Ngerulmud", c: "Palau", d: "Tea", tz: "Pacific/Palau", lt: 7.5, lg: 134.6 },
+                { n: "Panama City", c: "Panama", d: "Rum", tz: "America/Panama", lt: 8.9, lg: -79.5 },
+                { n: "Port Moresby", c: "Papua New Guinea", d: "Beer", tz: "Pacific/Port_Moresby", lt: -9.4, lg: 147.1 },
+                { n: "Asuncion", c: "Paraguay", d: "Beer", tz: "America/Asuncion", lt: -25.2, lg: -57.5 },
+                { n: "Lima", c: "Peru", d: "Pisco Sour", tz: "America/Lima", lt: -12.0, lg: -77.0 },
+                { n: "Manila", c: "Philippines", d: "Beer", tz: "Asia/Manila", lt: 14.5, lg: 120.9 },
+                { n: "Warsaw", c: "Poland", d: "Vodka", tz: "Europe/Warsaw", lt: 52.2, lg: 21.0 },
+                { n: "Lisbon", c: "Portugal", d: "Wine", tz: "Europe/Lisbon", lt: 38.7, lg: -9.1 },
+                { n: "Doha", c: "Qatar", d: "Coffee", tz: "Asia/Qatar", lt: 25.2, lg: 51.5 },
+                { n: "Bucharest", c: "Romania", d: "Beer", tz: "Europe/Bucharest", lt: 44.4, lg: 26.1 },
+                { n: "Moscow", c: "Russia", d: "Vodka", tz: "Europe/Moscow", lt: 55.7, lg: 37.6 },
+                { n: "Kigali", c: "Rwanda", d: "Tea", tz: "Africa/Kigali", lt: -1.9, lg: 30.0 },
+                { n: "Basseterre", c: "St. Kitts and Nevis", d: "Rum", tz: "America/St_Kitts", lt: 17.3, lg: -62.7 },
+                { n: "Castries", c: "St. Lucia", d: "Rum", tz: "America/St_Lucia", lt: 14.0, lg: -60.9 },
+                { n: "Kingstown", c: "St. Vincent", d: "Rum", tz: "America/St_Vincent", lt: 13.1, lg: -61.2 },
+                { n: "Apia", c: "Samoa", d: "Tea", tz: "Pacific/Apia", lt: -13.8, lg: -171.7 },
+                { n: "San Marino", c: "San Marino", d: "Wine", tz: "Europe/San_Marino", lt: 43.9, lg: 12.4 },
+                { n: "Sao Tome", c: "Sao Tome and Principe", d: "Tea", tz: "Africa/Sao_Tome", lt: 0.3, lg: 6.7 },
+                { n: "Riyadh", c: "Saudi Arabia", d: "Coffee", tz: "Asia/Riyadh", lt: 24.7, lg: 46.6 },
+                { n: "Dakar", c: "Senegal", d: "Tea", tz: "Africa/Dakar", lt: 14.7, lg: -17.4 },
+                { n: "Belgrade", c: "Serbia", d: "Rakia", tz: "Europe/Belgrade", lt: 44.7, lg: 20.4 },
+                { n: "Victoria", c: "Seychelles", d: "Rum", tz: "Indian/Mahe", lt: -4.6, lg: 55.4 },
+                { n: "Freetown", c: "Sierra Leone", d: "Beer", tz: "Africa/Freetown", lt: 8.4, lg: -13.2 },
+                { n: "Singapore", c: "Singapore", d: "Beer", tz: "Asia/Singapore", lt: 1.2, lg: 103.8 },
+                { n: "Bratislava", c: "Slovakia", d: "Beer", tz: "Europe/Bratislava", lt: 48.1, lg: 17.1 },
+                { n: "Ljubljana", c: "Slovenia", d: "Wine", tz: "Europe/Ljubljana", lt: 46.0, lg: 14.5 },
+                { n: "Honiara", c: "Solomon Islands", d: "Tea", tz: "Pacific/Guadalcanal", lt: -9.4, lg: 159.9 },
+                { n: "Mogadishu", c: "Somalia", d: "Tea", tz: "Africa/Mogadishu", lt: 2.0, lg: 45.3 },
+                { n: "Pretoria", c: "South Africa", d: "Wine", tz: "Africa/Johannesburg", lt: -25.7, lg: 28.2 },
+                { n: "Grytviken", c: "South Georgia", d: "Rum", tz: "Atlantic/South_Georgia", lt: -54.2, lg: -36.5 },
+                { n: "Seoul", c: "South Korea", d: "Beer", tz: "Asia/Seoul", lt: 37.5, lg: 126.9 },
+                { n: "Juba", c: "South Sudan", d: "Tea", tz: "Africa/Juba", lt: 4.8, lg: 31.5 },
+                { n: "Madrid", c: "Spain", d: "Wine", tz: "Europe/Madrid", lt: 40.4, lg: -3.7 },
+                { n: "Colombo", c: "Sri Lanka", d: "Tea", tz: "Asia/Colombo", lt: 6.9, lg: 79.8 },
+                { n: "Khartoum", c: "Sudan", d: "Tea", tz: "Africa/Khartoum", lt: 15.5, lg: 32.5 },
+                { n: "Paramaribo", c: "Suriname", d: "Rum", tz: "America/Paramaribo", lt: 5.8, lg: -55.2 },
+                { n: "Stockholm", c: "Sweden", d: "Beer", tz: "Europe/Stockholm", lt: 59.3, lg: 18.0 },
+                { n: "Bern", c: "Switzerland", d: "Wine", tz: "Europe/Zurich", lt: 46.9, lg: 7.4 },
+                { n: "Damascus", c: "Syria", d: "Arak", tz: "Asia/Damascus", lt: 33.5, lg: 36.3 },
+                { n: "Taipei", c: "Taiwan", d: "Tea", tz: "Asia/Taipei", lt: 25.0, lg: 121.5 },
+                { n: "Dushanbe", c: "Tajikistan", d: "Tea", tz: "Asia/Dushanbe", lt: 38.5, lg: 68.7 },
+                { n: "Dodoma", c: "Tanzania", d: "Beer", tz: "Africa/Dar_es_Salaam", lt: -6.1, lg: 35.7 },
+                { n: "Bangkok", c: "Thailand", d: "Beer", tz: "Asia/Bangkok", lt: 13.7, lg: 100.5 },
+                { n: "Dili", c: "Timor-Leste", d: "Coffee", tz: "Asia/Dili", lt: -8.5, lg: 125.5 },
+                { n: "Lome", c: "Togo", d: "Beer", tz: "Africa/Lome", lt: 6.1, lg: 1.2 },
+                { n: "Nuku'alofa", c: "Tonga", d: "Tea", tz: "Pacific/Tongatapu", lt: -21.1, lg: -175.2 },
+                { n: "Port of Spain", c: "Trinidad and Tobago", d: "Rum", tz: "America/Port_of_Spain", lt: 10.6, lg: -61.5 },
+                { n: "Tunis", c: "Tunisia", d: "Tea", tz: "Africa/Tunis", lt: 36.8, lg: 10.1 },
+                { n: "Ankara", c: "Turkey", d: "Tea", tz: "Europe/Istanbul", lt: 39.9, lg: 32.8 },
+                { n: "Ashgabat", c: "Turkmenistan", d: "Tea", tz: "Asia/Ashgabat", lt: 37.9, lg: 58.3 },
+                { n: "Funafuti", c: "Tuvalu", d: "Tea", tz: "Pacific/Funafuti", lt: -8.5, lg: 179.1 },
+                { n: "Kampala", c: "Uganda", d: "Beer", tz: "Africa/Kampala", lt: 0.3, lg: 32.5 },
+                { n: "Kyiv", c: "Ukraine", d: "Vodka", tz: "Europe/Kyiv", lt: 50.4, lg: 30.5 },
+                { n: "Abu Dhabi", c: "UAE", d: "Coffee", tz: "Asia/Dubai", lt: 24.4, lg: 54.3 },
+                { n: "London", c: "United Kingdom", d: "Gin & Tonic", tz: "Europe/London", lt: 51.5, lg: -0.1 },
+                { n: "Washington DC", c: "USA", d: "Bourbon", tz: "America/New_York", lt: 38.9, lg: -77.0 },
+                { n: "Montevideo", c: "Uruguay", d: "Wine", tz: "America/Montevideo", lt: -34.8, lg: -56.1 },
+                { n: "Tashkent", c: "Uzbekistan", d: "Tea", tz: "Asia/Tashkent", lt: 41.3, lg: 69.2 },
+                { n: "Port Vila", c: "Vanuatu", d: "Tea", tz: "Pacific/Efate", lt: -17.7, lg: 168.3 },
+                { n: "Vatican City", c: "Vatican City", d: "Wine", tz: "Europe/Vatican", lt: 41.9, lg: 12.4 },
+                { n: "Caracas", c: "Venezuela", d: "Rum", tz: "America/Caracas", lt: 10.5, lg: -66.9 },
+                { n: "Hanoi", c: "Vietnam", d: "Beer", tz: "Asia/Ho_Chi_Minh", lt: 21.0, lg: 105.8 },
+                { n: "Sanaa", c: "Yemen", d: "Tea", tz: "Asia/Aden", lt: 15.3, lg: 44.2 },
+                { n: "Lusaka", c: "Zambia", d: "Beer", tz: "Africa/Lusaka", lt: -15.4, lg: 28.2 },
+                { n: "Harare", c: "Zimbabwe", d: "Beer", tz: "Africa/Harare", lt: -17.8, lg: 31.0 }
+            ];
+
+            const map = L.map('map', { zoomControl: false, minZoom: 2 }).setView([20, 0], 2);
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').addTo(map);
+            let markerLayer = L.layerGroup().addTo(map);
+
+            window.openRecipe = (drinkKey, city, country) => {
+                map.closePopup();
+                const r = recipes[drinkKey] || recipes["Beer"];
+                document.getElementById('recipe-body').innerHTML = `
+                    <h2 style="color:var(--accent); margin:0; line-height:1.1;">${city}</h2>
+                    <p style="opacity:0.6; margin: 10px 0 20px 0; font-size: 0.95rem;">${country}</p>
+                    <p style="font-size: 0.85rem; text-transform: uppercase; letter-spacing: 1px; color: var(--accent);">National Selection</p>
+                    <p style="font-size: 1.2rem; font-weight: 800; margin: 5px 0;">${drinkKey}</p>
+                    <hr>
+                    <p><b>Ingredients:</b></p>
+                    <ul style="padding-left:20px; font-size:0.95rem; line-height: 1.6;">${r.ing.map(i => `<li>${i}</li>`).join('')}</ul>
+                    <p><b>Preparation:</b></p>
+                    <p style="font-size:0.95rem; opacity:0.9; line-height:1.5;">${r.inst}</p>
+                `;
+                document.getElementById('recipe-modal').classList.add('active');
+            };
+
+            window.closeRecipe = () => document.getElementById('recipe-modal').classList.remove('active');
+
+            function createPin(loc) {
+                const m = L.circleMarker([loc.lt, loc.lg], { radius: 9, fillColor: "#ffae00", color: "#fff", weight: 1.5, fillOpacity: 0.95 });
+                m.bindPopup(`
+                    <div style="text-align:center;">
+                        <span style="font-size:1.1rem; font-weight:800; color:white;">${loc.n}</span><br>
+                        <span style="font-size:0.8rem; color:#aaa;">${loc.c}</span><br>
+                        <button class="recipe-btn" onclick="openRecipe('${loc.d}', '${loc.n}', '${loc.c}')">Open Recipe</button>
+                    </div>`, { closeButton: false });
+                return m;
+            }
+
+            window.showAll = () => {
+                window.closeRecipe();
+                const now = DateTime.now();
+                const matches = locations.filter(loc => now.setZone(loc.tz).hour === 17);
+                markerLayer.clearLayers();
+                if (matches.length) {
+                    const b = matches.map(m => { markerLayer.addLayer(createPin(m)); return [m.lt, m.lg]; });
+                    map.flyToBounds(b, { padding: [60, 60], maxZoom: 4 });
+                    document.getElementById('status-bar').innerText = `${matches.length} NATIONS IN THE 5PM BELT`;
+                } else {
+                    document.getElementById('status-bar').innerText = "BELT ROTATING... CALIBRATING NEXT TIMEZONE";
+                }
+            };
+
+            window.showOne = () => {
+                window.closeRecipe();
+                const matches = locations.filter(loc => DateTime.now().setZone(loc.tz).hour === 17);
+                if (matches.length) {
+                    const p = matches[Math.floor(Math.random() * matches.length)];
+                    markerLayer.clearLayers();
+                    const m = createPin(p);
+                    markerLayer.addLayer(m);
+                    map.flyTo([p.lt, p.lg], 5);
+                    setTimeout(() => m.openPopup(), 800);
+                }
+            };
+
+            map.on('click', () => window.closeRecipe());
+            window.showAll();
+        });
+    </script>
+</body>
+</html>
